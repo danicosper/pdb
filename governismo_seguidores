@@ -1,0 +1,285 @@
+#Tentando extrair a taxa de governismo para os anos de 2023 a 2025 por deputado
+#Carregando os pacotes
+library(here)
+library(httr)
+library(jsonlite)
+library(tidyverse)
+library(rio)
+library(janitor)
+library(lubridate)
+library(ggplot2)
+library (gt) #tabelas bonitas
+library(stringi)
+library(dplyr)
+library(stringr)
+library(readr)
+library(scales)
+
+#Site da camara onde pegamos os dados: https://dadosabertos.camara.leg.br/swagger/api.html?tab=staticfile
+
+#Puxando os bancos de dados:
+votos2025 <- read.csv(here("data","raw","votacoesVotos-2025.csv"), header=T, sep=";", fill=T, fileEncoding="UTF-8-BOM")
+lider2025 <- read.csv(here("data", "raw", "votacoesOrientacoes-2025.csv"), header=T, sep=";", fill=T, fileEncoding="UTF-8-BOM")
+votos2024 <- read.csv(here("data","raw","votacoesVotos-2024.csv"), header=T, sep=";", fill=T, fileEncoding="UTF-8-BOM")
+lider2024 <- read.csv(here("data", "raw", "votacoesOrientacoes-2024.csv"), header=T, sep=";", fill=T, fileEncoding="UTF-8-BOM")
+votos2023 <- read.csv(here("data","raw","votacoesVotos-2023.csv"), header=T, sep=";", fill=T, fileEncoding="UTF-8-BOM")
+lider2023 <- read.csv(here("data", "raw", "votacoesOrientacoes-2023.csv"), header=T, sep=";", fill=T, fileEncoding="UTF-8-BOM")
+
+#Vamos unir os bancos de dados para abordar o governo lula em conjunto até 8 de novembro de 2025:
+votos <- bind_rows(votos2023,votos2024,votos2025)
+lider <- bind_rows(lider2023,lider2024,lider2025)
+
+#Criar a variavel data da votacao
+votos <- separate(votos, "dataHoraVoto", c("data", "hora"), sep = "T")
+
+#Criar votacoes validas, ou seja, com quórum de 50%
+#50% de 513 deputados é 257
+temp <- votos %>%
+  filter(voto != "O") %>%
+  group_by(idVotacao, data) %>%
+  summarize(n = n()) %>%
+  mutate(valida = ifelse(as.Date(data) > as.Date("1995-01-31") & n >= 257, 1,0)) %>%
+  select(idVotacao, valida)
+
+#juntando esse banco da votacao valida com o de votos
+votos <- votos %>%
+  left_join(temp, by = "idVotacao")
+
+#transformando os votos em vetores
+votos <- votos %>% mutate(voto=recode(votos$voto, "Sim" = "S", "Não" = "N", "Abstenção" = "A"))
+
+# criar votacoes unanimes - criterio da ciencia politica mundial, pois a maior parte das votacoes sao unanimes
+#VOTACOES UNANIMES
+#criterio: 90% do plenario votou igual (sim ou nao),
+# levando em considerao abstencao e desconsiderando obstrucao
+temp <- votos %>%
+  filter(voto != "O") %>%
+  group_by(idVotacao, voto) %>%
+  summarize(n = n()) %>%
+  spread(key = voto, value = n, fill = 0) %>%
+  mutate(unanime = ifelse(S/(A+N+S) >= .9 | N/(A+N+S) >= .9, 1, 0)) %>%
+  select(idVotacao, unanime)
+
+votos <- votos %>%
+  left_join(temp, by = "idVotacao")
+
+# Indica se a votacao entra na amostra
+#ou seja, votacao valida e nao unanime?
+votos <- votos %>%
+  mutate(amostra = ifelse(valida == 1 & unanime == 0, 1, 0))
+
+#E já vamos filtrar apenas o que entra na amostra
+votos <- votos %>%
+  filter(amostra == 1)
+
+#Agora vamos transformar em caracter lógico a votacao do lider do governo no banco de dados lider
+lider <- lider %>% mutate(lider=recode(lider$orientacao, "Sim" = "S", "Não" = "N", "Liberado" = "L", "Obstrução" = "O"))
+
+#Agora vamos filtrar apenas a orientacao do lider do governo
+lider <- lider %>% filter(siglaBancada == "Governo")
+
+#Agora vamos criar a variavel de disciplina em relacao ao governo por votacao, adicionando no banco de votos
+#a orientacao do governo e depois criando uma variavel testando se o voto é igual a orientacao. Antes disso
+#vamos só diminuir o banco lider para não adicionar variáveis a toa e vamos renomear a variavel lider dentro de lider
+#pra ficar menos confuso
+lider <- lider %>% select(idVotacao, lider)
+lider <- lider %>% rename(origoverno = lider)
+
+votos <- votos %>%
+  left_join(lider, by = "idVotacao")
+
+#Agora vamos ver o índice de governismo por deputado por partido, vou add também a UF, vamos chamar de discg, que é disciplina em relacao ao governo
+votos$discg <- ifelse(votos$voto==votos$origoverno,1,0)
+
+discg <- votos %>%
+  filter(amostra == 1) %>%
+  group_by(deputado_nome, deputado_siglaPartido, deputado_siglaUf) %>%
+  summarize(discg = sum(discg,na.rm=T)/sum(!is.na(discg))*100)
+
+#Agora vamos exportar a tabela
+export(discg, here("data", "processed", "governismo_dep_regiao_novembro2025.csv"))
+
+#Agora vou filtrar apenas pelos deputados do PL:
+discg <- filter(discg, deputado_siglaPartido == "PL")
+
+#Vou salvar apenas deputados do PL:
+export(discg, here("data", "processed", "governismo_depPL_regiao_novembro2025.csv"))
+
+#Vou pedir um gráfico do governismo do PL no governo Lula III:
+ggplot(discg, aes(x = discg)) +
+  geom_histogram(binwidth = 1, fill = "steelblue", color = "white") +
+  labs(title = "Governismo do PL no governo Lula III", x = "% de Governismo", y = "Frequência")
+
+
+#Agora vou adicionar os seguidores no instagram dos deputados pra ver se tem correlação com governismo:
+insta <- read.csv(here("data", "raw", "deputados_seguidores.csv"), header=T, sep=";", fill=T, fileEncoding="UTF-8-BOM")
+
+higieniza_nome <- function(x) {
+  x %>%
+    enc2utf8() %>%
+    stringi::stri_trans_nfc() %>%
+    stringr::str_to_lower(locale = "pt_BR") %>%
+    stringr::str_squish() %>%
+    stringr::str_replace_all("[[:punct:]]", " ") %>%
+    stringr::str_squish() %>%
+    stringi::stri_trans_general("Latin-ASCII")  # remove acentos (José -> Jose)
+}
+
+discg <- discg %>% mutate(deputado_key = higieniza_nome(deputado_nome))
+insta <- insta %>% mutate(deputado_key = higieniza_nome(deputado_nome))
+
+dep_insta <- left_join(discg, insta, by = "deputado_key")
+
+#Correlação
+
+
+# 1) Garantir que as duas colunas são numéricas com decimal "."
+dep_insta_num <- dep_insta %>%
+  mutate(
+    seguidores_insta = parse_number(as.character(seguidores_insta),
+                                    locale = locale(decimal_mark = ".", grouping_mark = ",")),
+    discg = parse_number(as.character(discg),
+                         locale = locale(decimal_mark = ".", grouping_mark = ","))
+  )
+
+# 2) Resumo rápido de completude
+resumo <- dep_insta_num %>%
+  summarise(
+    n_total = n(),
+    n_completo = sum(complete.cases(seguidores_insta, discg))
+  )
+print(resumo)
+
+# 3) Correlação de Pearson (coeficiente + teste com p-valor e IC)
+pearson_r <- cor(dep_insta_num$seguidores_insta, dep_insta_num$discg,
+                 use = "complete.obs", method = "pearson")
+cat("Coeficiente de correlação de Pearson (r):", round(pearson_r, 3), "\n")
+
+pearson_test <- cor.test(dep_insta_num$seguidores_insta, dep_insta_num$discg,
+                         use = "complete.obs", method = "pearson")
+print(pearson_test)
+
+# 4) (Opcional) Gráfico de dispersão com linha de tendência linear
+ggplot(dep_insta_num, aes(x = seguidores_insta, y = discg)) +
+  geom_point(alpha = 0.6) +
+  geom_smooth(method = "lm", se = TRUE, color = "steelblue") +
+  scale_x_continuous(labels = label_number(big.mark = ",", decimal.mark = ".")) +
+  scale_y_continuous(labels = label_number(big.mark = ",", decimal.mark = ".")) +
+  labs(
+    x = "Seguidores no Instagram",
+    y = "discg",
+    title = "Correlação (Pearson) entre seguidores_insta e discg"
+  ) +
+  theme_minimal()
+
+#Agora vou retirar o tiririca outlier:
+
+dep_insta_clean <- dep_insta %>%
+  filter(deputado_key != "Tiririca")
+
+cor(dep_insta_clean$seguidores_insta, dep_insta_clean$discg,
+    use = "complete.obs", method = "pearson")
+
+#Agora vou tentar correlação de Spearman:
+cor(dep_insta$seguidores_insta, dep_insta$discg,
+    use = "complete.obs", method = "spearman")
+
+cor.test(dep_insta$seguidores_insta, dep_insta$discg,
+         use = "complete.obs", method = "spearman", exact = FALSE)
+
+
+##Agora o grafico>
+
+lot_spearman <- function(df,
+                         x = "seguidores_insta",
+                         y = "discg",
+                         remove_outlier_value = NULL,   # ex.: 200000
+                         remove_outlier_name = NULL,    # ex.: "Fulano de Tal"
+                         name_col = "deputado_nome",
+                         log_scale = FALSE) {
+  d <- df
+  
+  # Remove outlier por valor (na variável x)
+  if (!is.null(remove_outlier_value)) {
+    d <- d %>% filter(.data[[x]] != remove_outlier_value)
+  }
+  
+  # Remove outlier por nome (se houver essa coluna)
+  if (!is.null(remove_outlier_name) && name_col %in% names(d)) {
+    d <- d %>% filter(.data[[name_col]] != remove_outlier_name)
+  }
+  
+  # Cálculo de Spearman
+  if (log_scale) {
+    mask <- d[[x]] > 0 & d[[y]] > 0
+    st <- cor.test(
+      log10(d[[x]][mask]),
+      log10(d[[y]][mask]),
+      use = "complete.obs", method = "spearman", exact = FALSE
+    )
+    rho  <- unname(st$estimate); pval <- st$p.value
+    p <- ggplot(d, aes(x = .data[[x]] + 1, y = .data[[y]] + 1)) +
+      geom_point(alpha = 0.6) +
+      geom_smooth(method = "loess", se = TRUE, color = "steelblue") +
+      scale_x_log10(labels = label_number(big.mark = ",", decimal.mark = ".")) +
+      scale_y_log10(labels = label_number(big.mark = ",", decimal.mark = ".")) +
+      labs(
+        title = sprintf("Escala log10 — Spearman ρ = %.3f (p = %.2g)", rho, pval),
+        x = paste0(x, " (log10)"), y = paste0(y, " (log10)")
+      ) +
+      theme_minimal()
+  } else {
+    st <- cor.test(
+      d[[x]], d[[y]],
+      use = "complete.obs", method = "spearman", exact = FALSE
+    )
+    rho  <- unname(st$estimate); pval <- st$p.value
+    p <- ggplot(d, aes(x = .data[[x]], y = .data[[y]])) +
+      geom_point(alpha = 0.6) +
+      geom_smooth(method = "loess", se = TRUE, color = "tomato") +
+      scale_x_continuous(labels = label_number(big.mark = ",", decimal.mark = ".")) +
+      scale_y_continuous(labels = label_number(big.mark = ",", decimal_mark = ".")) +
+      labs(
+        title = sprintf("Spearman ρ = %.3f (p = %.2g)", rho, pval),
+        x = x, y = y
+      ) +
+      theme_minimal()
+  }
+  
+  return(p)
+}
+
+
+####Fazendo o gráfico aparecer:
+# Pacotes
+library(dplyr)
+library(ggplot2)
+library(scales)
+
+# 1) Teste de Spearman
+spearman_test <- cor.test(
+  dep_insta$seguidores_insta, dep_insta$discg,
+  use = "complete.obs", method = "spearman", exact = FALSE
+)
+
+rho  <- unname(spearman_test$estimate)
+pval <- spearman_test$p.value
+
+# 2) Construir o gráfico
+p <- ggplot(dep_insta, aes(x = seguidores_insta, y = discg)) +
+  geom_point(alpha = 0.7) +
+  geom_smooth(method = "loess", se = TRUE, color = "tomato") +
+  scale_x_continuous(labels = label_number(big.mark = ",", decimal.mark = ".")) +
+  scale_y_continuous(labels = label_number(big.mark = ",", decimal.mark = ".")) +
+  labs(
+    title = sprintf("Seguidores x Discg — Spearman ρ = %.3f (p = %.2g)", rho, pval),
+    x = "Seguidores no Instagram",
+    y = "discg"
+  ) +
+  theme_minimal(base_size = 12)
+
+# 3) MOSTRAR NA TELA (em knit/source/terminal é importante chamar print)
+print(p)
+
+# 4) SALVAR EM ARQUIVO (confirma que o gráfico foi gerado)
+ggsave("spearman_seguidores_discg.png", plot = p, width = 8, height = 5, dpi = 120)
