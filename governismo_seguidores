@@ -76,7 +76,7 @@ votos <- votos %>%
 lider <- lider %>% mutate(lider=recode(lider$orientacao, "Sim" = "S", "Não" = "N", "Liberado" = "L", "Obstrução" = "O"))
 
 #Agora vamos filtrar apenas a orientacao do lider do governo
-lider <- lider %>% filter(siglaBancada == "Governo")
+lider <- lider %>% filter(siglaBancada == "Governo", "GOV")
 
 #Agora vamos criar a variavel de disciplina em relacao ao governo por votacao, adicionando no banco de votos
 #a orientacao do governo e depois criando uma variavel testando se o voto é igual a orientacao. Antes disso
@@ -278,8 +278,9 @@ p <- ggplot(dep_insta, aes(x = seguidores_insta, y = discg)) +
   ) +
   theme_minimal(base_size = 12)
 
-# 3) MOSTRAR NA TELA (em knit/source/terminal é importante chamar print)
+# 3) MOSTRAR NA TELA 
 print(p)
 
-# 4) SALVAR EM ARQUIVO (confirma que o gráfico foi gerado)
+# 4) SALVAR EM ARQUIVO
 ggsave("spearman_seguidores_discg.png", plot = p, width = 8, height = 5, dpi = 120)
+
